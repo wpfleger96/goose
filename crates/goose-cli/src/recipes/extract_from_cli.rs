@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use goose::recipe::SubRecipe;
 
+use crate::recipes::recipe::RECIPE_FILE_EXTENSIONS;
+use crate::recipes::search_recipe::retrieve_recipe_file;
 use crate::{cli::InputConfig, recipes::recipe::load_recipe_as_template, session::SessionSettings};
 
 pub fn extract_recipe_info_from_cli(
@@ -16,20 +18,48 @@ pub fn extract_recipe_info_from_cli(
     });
     let mut all_sub_recipes = recipe.sub_recipes.clone().unwrap_or_default();
     if !additional_sub_recipes.is_empty() {
-        additional_sub_recipes.iter().for_each(|sub_recipe_path| {
-            let path = convert_path(sub_recipe_path);
-            let name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let additional_sub_recipe: SubRecipe = SubRecipe {
-                path: path.to_string_lossy().to_string(),
-                name,
-                values: None,
-            };
-            all_sub_recipes.push(additional_sub_recipe);
-        });
+        for sub_recipe_name in additional_sub_recipes {
+            // Use retrieve_recipe_file to handle both local files and GitHub recipes
+            match retrieve_recipe_file(&sub_recipe_name) {
+                Ok((_content, recipe_dir)) => {
+                    // For local files ending with .yaml/.json, retrieve_recipe_file returns the content directly
+                    // For GitHub recipes, it downloads to a temp dir and we need to find the recipe file
+                    let recipe_file_path = if sub_recipe_name.ends_with(".yaml")
+                        || sub_recipe_name.ends_with(".json")
+                    {
+                        // Direct file path - expand ~ and use the original path
+                        convert_path(&sub_recipe_name)
+                    } else {
+                        // GitHub recipe - find the recipe file in the downloaded directory
+                        match find_recipe_file_in_dir(&recipe_dir) {
+                            Ok(path) => path,
+                            Err(find_err) => {
+                                return Err(anyhow!(
+                                    "Could not find recipe file in directory {}: {}",
+                                    recipe_dir.display(),
+                                    find_err
+                                ));
+                            }
+                        }
+                    };
+
+                    let name = extract_recipe_name(&sub_recipe_name);
+                    let additional_sub_recipe = SubRecipe {
+                        path: recipe_file_path.to_string_lossy().to_string(),
+                        name,
+                        values: None,
+                    };
+                    all_sub_recipes.push(additional_sub_recipe);
+                }
+                Err(e) => {
+                    return Err(anyhow!(
+                        "Could not retrieve sub-recipe '{}': {}",
+                        sub_recipe_name,
+                        e
+                    ));
+                }
+            }
+        }
     }
     Ok((
         InputConfig {
@@ -44,6 +74,37 @@ pub fn extract_recipe_info_from_cli(
         }),
         Some(all_sub_recipes),
     ))
+}
+
+fn find_recipe_file_in_dir(dir: &PathBuf) -> Result<PathBuf> {
+    // Look for recipe.yaml, recipe.json, or any files with the supported extensions
+    for ext in RECIPE_FILE_EXTENSIONS {
+        let recipe_path = dir.join(format!("recipe.{}", ext));
+        if recipe_path.exists() {
+            return Ok(recipe_path);
+        }
+    }
+
+    // If no recipe.yaml/json found, return an error
+    Err(anyhow!(
+        "No recipe file found in directory: {} (looked for extensions: {:?})",
+        dir.display(),
+        RECIPE_FILE_EXTENSIONS
+    ))
+}
+
+fn extract_recipe_name(recipe_identifier: &str) -> String {
+    // If it's a path (contains / or \), extract the file stem
+    if recipe_identifier.contains('/') || recipe_identifier.contains('\\') {
+        PathBuf::from(recipe_identifier)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    } else {
+        // If it's just a name (like "weekly-updates"), use it directly
+        recipe_identifier.to_string()
+    }
 }
 
 fn convert_path(path: &str) -> PathBuf {
@@ -96,11 +157,22 @@ mod tests {
     #[test]
     fn test_extract_recipe_info_from_cli_with_additional_sub_recipes() {
         let (_temp_dir, recipe_path) = create_recipe();
+
+        // Create actual sub-recipe files in the temp directory
+        std::fs::create_dir_all(_temp_dir.path().join("path/to")).unwrap();
+        std::fs::create_dir_all(_temp_dir.path().join("another")).unwrap();
+
+        let sub_recipe1_path = _temp_dir.path().join("path/to/sub_recipe1.yaml");
+        let sub_recipe2_path = _temp_dir.path().join("another/sub_recipe2.yaml");
+
+        std::fs::write(&sub_recipe1_path, "title: Sub Recipe 1").unwrap();
+        std::fs::write(&sub_recipe2_path, "title: Sub Recipe 2").unwrap();
+
         let params = vec![("name".to_string(), "my_value".to_string())];
         let recipe_name = recipe_path.to_str().unwrap().to_string();
         let additional_sub_recipes = vec![
-            "path/to/sub_recipe1.yaml".to_string(),
-            "another/sub_recipe2.yaml".to_string(),
+            sub_recipe1_path.to_string_lossy().to_string(),
+            sub_recipe2_path.to_string_lossy().to_string(),
         ];
 
         let (input_config, settings, sub_recipes) =
@@ -125,10 +197,16 @@ mod tests {
         assert_eq!(sub_recipes[0].path, "existing_sub_recipe.yaml".to_string());
         assert_eq!(sub_recipes[0].name, "existing_sub_recipe".to_string());
         assert!(sub_recipes[0].values.is_none());
-        assert_eq!(sub_recipes[1].path, "path/to/sub_recipe1.yaml".to_string());
+        assert_eq!(
+            sub_recipes[1].path,
+            sub_recipe1_path.to_string_lossy().to_string()
+        );
         assert_eq!(sub_recipes[1].name, "sub_recipe1".to_string());
         assert!(sub_recipes[1].values.is_none());
-        assert_eq!(sub_recipes[2].path, "another/sub_recipe2.yaml".to_string());
+        assert_eq!(
+            sub_recipes[2].path,
+            sub_recipe2_path.to_string_lossy().to_string()
+        );
         assert_eq!(sub_recipes[2].name, "sub_recipe2".to_string());
         assert!(sub_recipes[2].values.is_none());
     }

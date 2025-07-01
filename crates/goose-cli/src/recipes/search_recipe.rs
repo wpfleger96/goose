@@ -10,7 +10,14 @@ use super::github_recipe::{retrieve_recipe_from_github, GOOSE_RECIPE_GITHUB_REPO
 const GOOSE_RECIPE_PATH_ENV_VAR: &str = "GOOSE_RECIPE_PATH";
 
 pub fn retrieve_recipe_file(recipe_name: &str) -> Result<(String, PathBuf)> {
-    // If recipe_name ends with yaml or json, treat it as a direct file path
+    // If recipe_name looks like a file path (contains path separators or starts with ~),
+    // treat it as a direct file path regardless of extension
+    if recipe_name.contains('/') || recipe_name.contains('\\') || recipe_name.starts_with('~') {
+        let path = convert_path_with_tilde_expansion(recipe_name);
+        return read_recipe_file(path);
+    }
+
+    // Legacy check: if recipe_name ends with yaml or json, also treat it as a direct file path
     if RECIPE_FILE_EXTENSIONS
         .iter()
         .any(|ext| recipe_name.ends_with(&format!(".{}", ext)))
@@ -76,6 +83,15 @@ fn configured_github_recipe_repo() -> Option<String> {
         Ok(Some(recipe_repo_full_name)) => Some(recipe_repo_full_name),
         _ => None,
     }
+}
+
+fn convert_path_with_tilde_expansion(path: &str) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix("~/") {
+        if let Some(home_dir) = dirs::home_dir() {
+            return home_dir.join(stripped);
+        }
+    }
+    PathBuf::from(path)
 }
 
 fn read_recipe_file<P: AsRef<Path>>(recipe_path: P) -> Result<(String, PathBuf)> {
