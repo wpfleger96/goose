@@ -39,7 +39,6 @@ pub fn extract_recipe_info_from_cli(
             }
         }
     }
-    println!("=========all_sub_recipes: {:?}", all_sub_recipes);
     Ok((
         InputConfig {
             contents: recipe.prompt,
