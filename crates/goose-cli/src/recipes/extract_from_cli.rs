@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Result};
 use goose::recipe::SubRecipe;
 
-use crate::recipes::recipe::RECIPE_FILE_EXTENSIONS;
 use crate::recipes::search_recipe::retrieve_recipe_file;
 use crate::{cli::InputConfig, recipes::recipe::load_recipe_as_template, session::SessionSettings};
 
@@ -19,31 +18,10 @@ pub fn extract_recipe_info_from_cli(
     let mut all_sub_recipes = recipe.sub_recipes.clone().unwrap_or_default();
     if !additional_sub_recipes.is_empty() {
         for sub_recipe_name in additional_sub_recipes {
-            // Use retrieve_recipe_file to handle both local files and GitHub recipes
             match retrieve_recipe_file(&sub_recipe_name) {
-                Ok((_content, recipe_dir)) => {
-                    // For local files ending with .yaml/.json, retrieve_recipe_file returns the content directly
-                    // For GitHub recipes, it downloads to a temp dir and we need to find the recipe file
-                    let recipe_file_path = if sub_recipe_name.ends_with(".yaml")
-                        || sub_recipe_name.ends_with(".json")
-                    {
-                        // Direct file path - expand ~ and use the original path
-                        convert_path(&sub_recipe_name)
-                    } else {
-                        // GitHub recipe - find the recipe file in the downloaded directory
-                        match find_recipe_file_in_dir(&recipe_dir) {
-                            Ok(path) => path,
-                            Err(find_err) => {
-                                return Err(anyhow!(
-                                    "Could not find recipe file in directory {}: {}",
-                                    recipe_dir.display(),
-                                    find_err
-                                ));
-                            }
-                        }
-                    };
-
+                Ok(recipe_file) => {
                     let name = extract_recipe_name(&sub_recipe_name);
+                    let recipe_file_path = recipe_file.file_path;
                     let additional_sub_recipe = SubRecipe {
                         path: recipe_file_path.to_string_lossy().to_string(),
                         name,
@@ -61,6 +39,7 @@ pub fn extract_recipe_info_from_cli(
             }
         }
     }
+    println!("=========all_sub_recipes: {:?}", all_sub_recipes);
     Ok((
         InputConfig {
             contents: recipe.prompt,
@@ -76,23 +55,6 @@ pub fn extract_recipe_info_from_cli(
     ))
 }
 
-fn find_recipe_file_in_dir(dir: &PathBuf) -> Result<PathBuf> {
-    // Look for recipe.yaml, recipe.json, or any files with the supported extensions
-    for ext in RECIPE_FILE_EXTENSIONS {
-        let recipe_path = dir.join(format!("recipe.{}", ext));
-        if recipe_path.exists() {
-            return Ok(recipe_path);
-        }
-    }
-
-    // If no recipe.yaml/json found, return an error
-    Err(anyhow!(
-        "No recipe file found in directory: {} (looked for extensions: {:?})",
-        dir.display(),
-        RECIPE_FILE_EXTENSIONS
-    ))
-}
-
 fn extract_recipe_name(recipe_identifier: &str) -> String {
     // If it's a path (contains / or \), extract the file stem
     if recipe_identifier.contains('/') || recipe_identifier.contains('\\') {
@@ -105,15 +67,6 @@ fn extract_recipe_name(recipe_identifier: &str) -> String {
         // If it's just a name (like "weekly-updates"), use it directly
         recipe_identifier.to_string()
     }
-}
-
-fn convert_path(path: &str) -> PathBuf {
-    if let Some(stripped) = path.strip_prefix("~/") {
-        if let Some(home_dir) = dirs::home_dir() {
-            return home_dir.join(stripped);
-        }
-    }
-    PathBuf::from(path)
 }
 
 #[cfg(test)]
