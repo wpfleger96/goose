@@ -3,13 +3,14 @@ use crate::recipes::print_recipe::{
     print_required_parameters_for_template,
 };
 use crate::recipes::search_recipe::load_recipe_file;
-use crate::recipes::secret_discovery::{discover_recipe_secrets, SecretRequirement};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use goose::config::Config;
 use goose::recipe::build_recipe::{
-    apply_values_to_parameters, build_recipe_from_template, validate_recipe_parameters, RecipeError,
+    apply_values_to_parameters, validate_recipe_parameters, RecipeError,
 };
 use goose::recipe::read_recipe_file_content::RecipeFile;
+use goose::recipe::resolved_recipe::ResolvedRecipe;
+use goose::recipe::secret_discovery::SecretRequirement;
 use goose::recipe::template_recipe::render_recipe_for_preview;
 use goose::recipe::Recipe;
 use serde_json::Value;
@@ -34,23 +35,22 @@ fn load_recipe_file_with_dir(recipe_name: &str) -> Result<(RecipeFile, String)> 
 }
 
 pub fn load_recipe(recipe_name: &str, params: Vec<(String, String)>) -> Result<Recipe> {
-    let recipe_file = load_recipe_file(recipe_name)?;
-    match build_recipe_from_template(recipe_file, params, Some(create_user_prompt_callback())) {
-        Ok(recipe) => {
-            let secret_requirements = discover_recipe_secrets(&recipe);
+    match ResolvedRecipe::load_recursive(recipe_name, params, Some(create_user_prompt_callback())) {
+        Ok(resolved) => {
+            let secret_requirements = resolved.discover_secrets();
             if let Err(e) = collect_missing_secrets(&secret_requirements) {
                 eprintln!(
                     "Warning: Failed to collect some secrets: {}. Recipe will continue to run.",
                     e
                 );
             }
-            Ok(recipe)
+            Ok(resolved.recipe)
         }
         Err(RecipeError::MissingParams { parameters }) => Err(anyhow::anyhow!(
             "Please provide the following parameters in the command line: {}",
             missing_parameters_command_line(parameters)
         )),
-        Err(e) => Err(anyhow::anyhow!(e.to_string())),
+        Err(e) => Err(e).context(format!("Failed to load recipe '{}'", recipe_name)),
     }
 }
 
